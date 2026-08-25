@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OPR Paper Minis</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="app-header">
+      <div>
+        <h1>OPR Paper Minis</h1>
+      </div>
+      <div class="header-actions">
+        <button id="cards-button" class="button secondary header-secondary" type="button" disabled>Cards anzeigen</button>
+        <button id="print-button" class="button primary" type="button" disabled>Drucken / als PDF sichern</button>
+      </div>
+    </header>
+
+    <main class="app-shell">
+      <div id="drop-zone" class="drop-zone" tabindex="0" role="button" aria-label="Dateien hier ablegen oder auswählen">
+        <strong>Ordner mit Aufstellung und Artworks ablegen</strong>
+        <span>Der Ordner enthält ein ArmyForge-JSON und die passenden Token-Artworks. Jeder Bild-Dateiname muss dem Einheitsnamen entsprechen, z. B. „Dwarf Warriors.png“.</span>
+        <div class="file-actions">
+          <label class="button secondary">Ordner wählen<input id="folder-input" type="file" webkitdirectory multiple hidden /></label>
+        </div>
+      </div>
+
+      <section class="layout-panel">
+        <div id="warnings" class="warnings" aria-live="polite"></div>
+        <div id="layout-output" class="layout-output">
+          <div class="empty-state">
+            <h3>Bereit für deine Minis</h3>
+            <p>Lade den Ordner mit dem ArmyForge-JSON und den zugehörigen Front-/Rückseiten-Artworks.</p>
+          </div>
+        </div>
+      </section>
+
+      <section id="cards-panel" class="cards-panel" aria-labelledby="cards-title" hidden>
+        <div class="section-heading">
+          <p class="step">03</p>
+          <div>
+            <h2 id="cards-title">Army‑Forge Cards</h2>
+            <p>Einheiten, Ausrüstung und Sonderregeln aus der geladenen Aufstellung.</p>
+          </div>
+        </div>
+        <div id="cards-output" class="cards-output" aria-live="polite"></div>
+      </section>
+    </main>
+
+    <template id="mini-template">
+      <article class="mini-strip">
+        <div class="panel glue glue-left"><span class="fold-label"></span></div>
+        <div class="panel artwork-panel front-panel"><span class="panel-art"></span></div>
+        <div class="panel artwork-panel back-panel"><span class="panel-art"></span></div>
+        <div class="panel glue glue-right"><span class="fold-label"></span></div>
+      </article>
+    </template>
+
+    <script src="app.js"></script>
+  </body>
+</html>

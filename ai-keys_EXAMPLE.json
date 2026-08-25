@@ -1,0 +1,23 @@
+{
+  "providers": [
+    {
+      "type": "gemini",
+      "enabled": true,
+      "apiKey": "token here",
+      "model": "gemini-2.5-flash-image"
+    },
+    {
+      "type": "cloudflare",
+      "enabled": true,
+      "apiToken": "token here",
+      "accountId": "id here",
+      "model": "@cf/black-forest-labs/flux-1-schnell"
+    },
+    {
+      "type": "huggingface",
+      "enabled": true,
+      "apiToken": "token here",
+      "model": "black-forest-labs/FLUX.1-schnell"
+    }
+  ]
+}
