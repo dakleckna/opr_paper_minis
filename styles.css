@@ -23,6 +23,9 @@ body {
 button, input { font: inherit; }
 
 .app-header {
+  position: sticky;
+  top: 0;
+  z-index: 20;
   min-height: 110px;
   padding: 25px clamp(20px, 5vw, 76px);
   display: flex;
@@ -196,6 +199,10 @@ body.cards-view .cards-panel { grid-column: 1; }
 .drop-zone strong { font-size: .96rem; }
 .drop-zone > span { color: var(--muted); font-size: .84rem; }
 .file-actions { margin-top: 5px; display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+.ai-status { min-height: 1.2em; color: var(--muted); font-size: .78rem; }
+.ai-status[data-state="working"] { color: var(--teal); }
+.ai-status[data-state="success"] { color: #28734a; }
+.ai-status[data-state="error"] { color: var(--accent-dark); }
 
 .format-note { padding: 15px; border-radius: 8px; background: #edf3f0; }
 .format-note p { margin-bottom: 6px; font-size: .82rem; }
@@ -235,6 +242,9 @@ tbody th { color: var(--accent-dark); }
 
 .warnings { display: grid; gap: 7px; }
 .warning { margin-bottom: 0; padding: 10px 12px; border-left: 4px solid #cb7625; color: #6c4118; background: #fff1d8; font-size: .82rem; }
+.artwork-attribution { display: none; margin: 12px 0 0; padding: 9px 12px; border-left: 3px solid #147cbd; color: #536273; background: #f1f7fb; font-size: .78rem; line-height: 1.45; }
+.artwork-attribution[data-visible="true"] { display: block; }
+.artwork-attribution strong { color: #2f4053; }
 
 .layout-output { display: grid; gap: 28px; }
 .empty-state { padding: 46px 20px; border: 1px dashed var(--line); border-radius: 8px; text-align: center; color: var(--muted); }
@@ -307,7 +317,7 @@ tbody th { color: var(--accent-dark); }
   .sheet-wrap:last-child { break-after: auto; }
   .a4-sheet { width: 210mm; height: 297mm; margin: 0; box-shadow: none; transform: none !important; }
   .a4-sheet.landscape { width: 297mm; height: 210mm; }
-  .cards-panel { page: cards; break-before: page; display: block; margin: 0; padding: 15mm 8mm 8mm; border: 0; border-radius: 0; box-shadow: none; background: white; }
+  .cards-panel { page: cards; break-before: page; display: block; margin: 0; padding: 0; border: 0; border-radius: 0; box-shadow: none; background: white; }
   .cards-panel .section-heading { display: none; }
   .cards-output { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; grid-auto-rows: max-content; gap: 5mm; margin: 0; }
   .army-unit-card { align-self: start; height: fit-content; break-inside: avoid; border: .45mm solid #101419; box-shadow: none; }
@@ -315,4 +325,6 @@ tbody th { color: var(--accent-dark); }
 
 @page portrait { size: A4 portrait; margin: 0; }
 @page landscape { size: A4 landscape; margin: 0; }
-@page cards { size: A4 portrait; margin: 0; }
+/* Page margins apply again on every continuation page of the cards flow, so
+   cards can never start flush against the printable edge on later pages. */
+@page cards { size: A4 portrait; margin: 10mm 8mm 8mm; }

@@ -2,20 +2,31 @@
   'use strict';
 
   const PAGE = { portrait: { width: 210, height: 297 }, landscape: { width: 297, height: 210 }, margin: 7 };
-  const ART_PADDING = 1.25;
+  // Two 10-% enlargement steps from Stable v1, exposed as one stable layout
+  // factor so every derived dimension remains proportional.
+  const MINI_SCALE = 1.2;
+  const ART_PADDING = 1.25 * MINI_SCALE;
+  // Stable Version 1 print geometry. The four panels are deliberately kept
+  // at these physical dimensions; the artwork is fitted inside the panels,
+  // never used to derive a new strip size.
   const PRESETS = {
     s: { label: 'S', faceSpan: 28, stripHeight: 30 },
     m: { label: 'M', faceSpan: 40, stripHeight: 36.5 },
     l: { label: 'L', faceSpan: 60, stripHeight: 54 },
     xl: { label: 'XL', faceSpan: 90, stripHeight: 112 },
   };
+  const DEFAULT_BASE_REFERENCE_MM = 120;
   // Fester Aufbau: 12,5 % Lasche | 37,5 % Vorderseite | 37,5 % Rückseite | 12,5 % Lasche.
   const RASTER = { faceShare: .375, tabFr: 1, faceFr: 3 };
   const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/svg+xml']);
   const output = document.querySelector('#layout-output');
   const warnings = document.querySelector('#warnings');
   const folderInput = document.querySelector('#folder-input');
+  const folderButton = document.querySelector('#folder-button');
+  const aiJsonInput = document.querySelector('#ai-json-input');
+  const aiStatus = document.querySelector('#ai-status');
   const dropZone = document.querySelector('#drop-zone');
+  const artworkAttribution = document.querySelector('#artwork-attribution');
   const printButton = document.querySelector('#print-button');
   const cardsButton = document.querySelector('#cards-button');
   const cardsPanel = document.querySelector('#cards-panel');
@@ -121,7 +132,7 @@
 
   // Transparente Ränder zählen nicht zur Miniaturgröße. Dadurch bestimmt die sichtbare Figur
   // und nicht eine zufällige PNG-Leinwand die Druckgröße.
-  async function trimTransparentArtwork(file) {
+  async function trimTransparentArtwork(file, removeGeneratedBackground = false) {
     if (!file || file.type === 'image/svg+xml') return file;
     try {
       const image = await imageFromFile(file);
@@ -132,6 +143,10 @@
       canvas.width = width;
       canvas.height = height;
       const context = canvas.getContext('2d', { willReadFrequently: true });
+      // Keep the source orientation untouched. Both folder imports and
+      // generated art use the same Stable-v1 CSS transforms below: front
+      // rotates 90 degrees right, back 90 degrees left and mirrors when the
+      // front image is reused.
       context.drawImage(image, 0, 0);
       const pixels = context.getImageData(0, 0, width, height).data;
       let hasTransparency = false;
@@ -152,6 +167,80 @@
           maxY = Math.max(maxY, y);
         }
       }
+      // Some image providers ignore the alpha request and return a flat white
+      // (or very dark) background. For generated files, remove only a uniform
+      // border-connected background before calculating the visible bounds.
+      if (removeGeneratedBackground) {
+        // Sample the full outer border instead of only the four corners. This
+        // also handles dark/grey gradients that caused black provider
+        // backgrounds to survive the earlier corner-uniformity test.
+        const borderColors = [];
+        const sampleStep = Math.max(1, Math.floor(Math.max(width, height) / 48));
+        const sample = pixel => {
+          const offset = pixel * 4;
+          if (pixels[offset + 3] >= 12) borderColors.push([pixels[offset], pixels[offset + 1], pixels[offset + 2]]);
+        };
+        for (let x = 0; x < width; x += sampleStep) {
+          sample(x);
+          sample((height - 1) * width + x);
+        }
+        for (let y = 0; y < height; y += sampleStep) {
+          sample(y * width);
+          sample(y * width + width - 1);
+        }
+        if (borderColors.length) {
+          const average = borderColors.reduce((sum, color) => color.map((channel, index) => sum[index] + channel), [0, 0, 0]).map(channel => channel / borderColors.length);
+          const colorDistance = (offset, color) => Math.hypot(pixels[offset] - color[0], pixels[offset + 1] - color[1], pixels[offset + 2] - color[2]);
+          const spread = Math.max(...borderColors.map(color => Math.hypot(color[0] - average[0], color[1] - average[1], color[2] - average[2])));
+          const tolerance = Math.min(140, Math.max(58, spread + 22));
+          const visited = new Uint8Array(width * height);
+          const queue = new Int32Array(width * height);
+          let head = 0;
+          let tail = 0;
+          const enqueue = pixel => {
+            if (pixel < 0 || pixel >= width * height || visited[pixel]) return;
+            const offset = pixel * 4;
+            if (pixels[offset + 3] < 12 || colorDistance(offset, average) > tolerance) return;
+            visited[pixel] = 1;
+            queue[tail] = pixel;
+            tail += 1;
+          };
+          for (let x = 0; x < width; x += 1) {
+            enqueue(x);
+            enqueue((height - 1) * width + x);
+          }
+          for (let y = 1; y < height - 1; y += 1) {
+            enqueue(y * width);
+            enqueue(y * width + width - 1);
+          }
+          while (head < tail) {
+            const pixel = queue[head++];
+            pixels[pixel * 4 + 3] = 0;
+            const x = pixel % width;
+            const y = Math.floor(pixel / width);
+            if (x > 0) enqueue(pixel - 1);
+            if (x + 1 < width) enqueue(pixel + 1);
+            if (y > 0) enqueue(pixel - width);
+            if (y + 1 < height) enqueue(pixel + width);
+          }
+          context.putImageData(new ImageData(pixels, width, height), 0, 0);
+          minX = width;
+          minY = height;
+          maxX = -1;
+          maxY = -1;
+          for (let index = 3; index < pixels.length; index += 4) {
+            if (pixels[index] <= 12) continue;
+            const pixel = (index - 3) / 4;
+            const x = pixel % width;
+            const y = Math.floor(pixel / width);
+            minX = Math.min(minX, x);
+            minY = Math.min(minY, y);
+            maxX = Math.max(maxX, x);
+            maxY = Math.max(maxY, y);
+          }
+          hasTransparency = true;
+        }
+      }
       if (!hasTransparency || maxX < minX || maxY < minY) return file;
       const padding = Math.max(2, Math.round(Math.max(width, height) * .008));
       minX = Math.max(0, minX - padding);
@@ -166,7 +255,8 @@
       cropped.height = cropHeight;
       cropped.getContext('2d').drawImage(canvas, minX, minY, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight);
       const blob = await canvasBlob(cropped);
-      return blob || file;
+      if (!blob) return file;
+      return new File([blob], file.name.replace(/\.[^.]+$/, '.png'), { type: 'image/png' });
     } catch {
       return file;
     }
@@ -175,7 +265,8 @@
   async function prepareArtworkRecords(records) {
     const assets = new Map();
     const files = [...new Set(records.flatMap(record => [record.front, record.back]).filter(Boolean))];
-    await Promise.all(files.map(async file => assets.set(file, await trimTransparentArtwork(file))));
+    const generatedFiles = new Set(records.filter(record => record.generated).flatMap(record => [record.front, record.back]).filter(Boolean));
+    await Promise.all(files.map(async file => assets.set(file, await trimTransparentArtwork(file, generatedFiles.has(file)))));
     return records.map(record => ({
       ...record,
       frontAsset: record.front ? assets.get(record.front) : null,
@@ -192,7 +283,59 @@
     }));
   }
 
+  function setAiStatus(message, state = '') {
+    if (!aiStatus) return;
+    aiStatus.textContent = message;
+    aiStatus.dataset.state = state;
+  }
+
+  function renderArtworkAttribution(records) {
+    if (!artworkAttribution) return;
+    const generated = records.filter(record => record.generated);
+    if (!generated.length) {
+      artworkAttribution.replaceChildren();
+      artworkAttribution.dataset.visible = 'false';
+      return;
+    }
+    const byProvider = new Map();
+    generated.forEach(record => {
+      const provider = record.provider || 'KI-Provider (nicht angegeben)';
+      if (!byProvider.has(provider)) byProvider.set(provider, []);
+      byProvider.get(provider).push(record.label);
+    });
+    artworkAttribution.replaceChildren();
+    const title = document.createElement('strong');
+    title.textContent = 'Artwork-Quelle: ';
+    artworkAttribution.append(title);
+    [...byProvider.entries()].forEach(([provider, labels], index) => {
+      if (index) artworkAttribution.append(document.createTextNode(' · '));
+      const line = document.createElement('span');
+      line.textContent = `${provider} (${labels.join(', ')})`;
+      artworkAttribution.append(line);
+    });
+    artworkAttribution.dataset.visible = 'true';
+  }
+
+  function parseBaseReference(value) {
+    const base = String(value || '').trim().toLocaleLowerCase();
+    if (!base || base === 'none') return null;
+    const dimensions = base.match(/\d+(?:\.\d+)?/g)?.map(Number).filter(Number.isFinite) || [];
+    // For oval/rectangular recommendations such as 120x92, the smaller
+    // dimension is the front-to-back footprint used by the folded paper mini.
+    return dimensions.length ? Math.min(...dimensions) : null;
+  }
+
+  function baseReferenceMm(unit) {
+    // Grimdark Future recommendations use round bases. A square value is the
+    // fallback for units without a round recommendation (for example, Titans).
+    return parseBaseReference(unit?.bases?.round)
+      ?? parseBaseReference(unit?.bases?.square)
+      ?? DEFAULT_BASE_REFERENCE_MM;
+  }
+
   function sizeFromBase(unit) {
+    // Keep the Stable v1 size buckets. For rectangular recommendations the
+    // larger dimension determines the bucket, matching the original layout.
     const base = String(unit?.bases?.round || unit?.bases?.square || '').toLocaleLowerCase();
     if (!base || base === 'none') return 'xl';
     const dimensions = base.match(/\d+(?:\.\d+)?/g)?.map(Number) || [];
@@ -214,7 +357,11 @@
     for (const selection of army.list.units) {
       const unit = unitsById.get(selection.id);
       const name = unit?.name || selection.id;
-      const record = artworkByName.get(normalizeName(selection.selectionId))
+      // AI-generated variants can share the same display name while using
+      // different selected weapons. Match their originating selection first;
+      // regular folder imports continue to use the filename/name lookup.
+      const record = artworkRecords.find(candidate => candidate.selectionIds?.includes(selection.selectionId))
+        || artworkByName.get(normalizeName(selection.selectionId))
         || artworkByName.get(normalizeName(selection.customName || ''))
         || artworkByName.get(normalizeName(name))
         || artworkByName.get(normalizeName(selection.id));
@@ -227,6 +374,7 @@
         messages.push(`${name}: Vorderseite fehlt. Ein Platzhalter wird gedruckt.`);
       }
       const count = Number(unit?.size) || 1;
+      const baseMm = baseReferenceMm(unit);
       const size = sizeFromBase(unit);
       for (let copy = 1; copy <= count; copy += 1) {
         entries.push({
@@ -234,6 +382,7 @@
           label: name,
           size,
           copy,
+          baseReferenceMm: baseMm,
           id: `${selection.selectionId}-${copy}`,
           selectionId: selection.selectionId,
           unitId: selection.id,
@@ -380,7 +529,19 @@
     });
   }
 
-  function buildAiArtworkRequests(army, armyBook) {
+  // Cloudflare's image models reject long prompt payloads. Keep the dynamic
+  // unit information at the beginning and the safety/format constraints at
+  // the end so both survive when a provider-safe limit is needed.
+  const AI_PROMPT_MAX_CHARS = 1800;
+  function providerSafeAiPrompt(prompt) {
+    const text = String(prompt || '').replace(/\s+/g, ' ').trim();
+    if (text.length <= AI_PROMPT_MAX_CHARS) return text;
+    const headLength = 1240;
+    const tailLength = AI_PROMPT_MAX_CHARS - headLength - 24;
+    return `${text.slice(0, headLength)} … [constraints continue] … ${text.slice(-tailLength)}`;
+  }
+
+  function buildAiArtworkRequests(army, armyBook, visualReference = '') {
     const unitsById = new Map((armyBook?.units || []).map(unit => [unit.id, unit]));
     const optionIndex = createUpgradeOptionIndex(armyBook);
     const requests = new Map();
@@ -392,22 +553,44 @@
       if (!requests.has(signature)) {
         const equipment = unit.weapons.map(weapon => {
           const count = Number(weapon.count) > 1 ? `${weapon.count}x ` : '';
-          return `${count}${weapon.name}`;
+          const details = [];
+          if (Number(weapon.range) > 0) details.push(`range ${weapon.range}"`);
+          if (Number(weapon.attacks) > 0) details.push(`A${weapon.attacks}`);
+          const specialRules = (weapon.specialRules || []).map(ruleLabel);
+          if (specialRules.length) details.push(specialRules.join(', '));
+          return `${count}${weapon.name}${details.length ? ` (${details.join('; ')})` : ''}`;
         }).join(', ');
+        const abilities = unit.rules.map(ruleLabel).join(', ');
+        const keywords = Array.isArray(baseUnit.keywords)
+          ? baseUnit.keywords.filter(Boolean).join(', ')
+          : '';
+        const reference = String(visualReference || '').replace(/\s+/g, ' ').trim().slice(0, 280);
+        const equipmentText = equipment.slice(0, 420);
+        const abilitiesText = abilities.slice(0, 280);
+        const keywordsText = keywords.slice(0, 160);
+        const prompt = [
+          'Create one standalone full-body 2D character or vehicle illustration only. This is concept artwork, not a paper miniature, printable token, cut-out, product photo, painted plastic/resin figure, tabletop miniature, or 3D render.',
+          `Faction: ${(army.armyName || armyBook.name || 'unknown faction').toString().slice(0, 120)}.`,
+          `Unit: ${baseUnit.name}.`,
+          `Equipment that must be visibly represented: ${equipmentText || 'standard equipment'}.`,
+          `Special rules and visual cues: ${abilitiesText || 'none'}.`,
+          keywordsText ? `Keywords: ${keywordsText}.` : '',
+          reference ? `Official OPR faction reference summary: ${reference}.` : 'Use the named OPR/ArmyForge faction as a short visual reference for its usual shapes, materials, markings, and color family when known.',
+          'Style: strong, even black contours; polished 2D comic/cel-shading; crisp edges; clear readable silhouette.',
+          'Armor and weapons must be detailed but not overloaded and must match the listed equipment.',
+          'Use faction-appropriate colors, including dirty/muted or vivid palettes when appropriate; no universal palette.',
+          'Avoid an almost monochrome black/grey result; use distinct body, armor, and accent colors with readable contrast unless the faction reference explicitly requires monochrome.',
+          'Exactly one complete subject. If the unit name is plural or contains several models, show one representative individual only, never a squad or multiple subjects.',
+          'Frontal or slight three-quarter portrait, approximately 2:3 (never square). Keep the subject naturally tall and narrow for a folded paper strip (roughly 3–4 times taller than wide), not a broad square composition. Let the subject fill about 80–90% of the canvas height, center it with an even margin, and show feet, wheels, and the lowest contact point fully.',
+          'White or transparent background; if transparency is unavailable, use pure white, never a black or grey studio gradient. No floor line.',
+          'No terrain, scenery, display stand, circular base, cast shadow, smoke, text, logo, frame, watermark, cropped parts, duplicates, or real physical miniature.',
+          'Use references as inspiration only; never copy a reference image or imitate a named artist or franchise.',
+        ].filter(Boolean).join(' ');
         requests.set(signature, {
           id: `generated-${requests.size + 1}`,
           label: baseUnit.name,
           targets: [],
-          prompt: [
-            'Create one full-body, upright science-fantasy tabletop paper miniature illustration.',
-            `Faction: ${army.armyName || armyBook.name || 'unknown faction'}.`,
-            `Unit: ${baseUnit.name}.`,
-            `Equipment: ${equipment || 'standard equipment'}.`,
-            `Scale category: ${sizeFromBase(baseUnit).toUpperCase()}.`,
-            'Show exactly one complete character or vehicle, with every foot or lowest contact point fully visible at the bottom of the canvas.',
-            'Use a clear front or three-quarter front view, centered composition, a clean white background, no terrain, no base, no cast shadow, no text, no labels, no frame, and no duplicate subjects.',
-            'Use original detailed painted sci-fi concept art with a crisp silhouette. Do not imitate a named artist or an existing franchise.',
-          ].join(' '),
+          prompt: providerSafeAiPrompt(prompt),
         });
       }
       requests.get(signature).targets.push({
@@ -416,6 +599,54 @@
       });
     });
     return [...requests.values()];
+  }
+
+  function generatedArtworkFileName(label, mimeType) {
+    const safe = String(label || 'generated-artwork')
+      .replace(/[<>:"/\\|?*]/g, '-')
+      .replace(/\s+/g, ' ')
+      .trim() || 'generated-artwork';
+    const type = String(mimeType || '').toLocaleLowerCase();
+    const extension = type.includes('png') ? 'png' : type.includes('webp') ? 'webp' : 'jpg';
+    return `${safe}.${extension}`;
+  }
+
+  async function generateAiArtwork(request) {
+    const response = await fetch('/api/generate-art', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'image/png, image/jpeg, image/webp' },
+      body: JSON.stringify({ prompt: providerSafeAiPrompt(request.prompt) }),
+    });
+    if (!response.ok) {
+      const detail = (await response.text()).replace(/\s+/g, ' ').trim();
+      throw new Error(`HTTP ${response.status}${detail ? ` – ${detail.slice(0, 180)}` : ''}`);
+    }
+    const blob = await response.blob();
+    const mimeType = blob.type || response.headers.get('content-type')?.split(';')[0] || 'image/png';
+    if (!mimeType.startsWith('image/')) throw new Error('Die KI-Antwort enthielt kein Bild.');
+    const file = new File([blob], generatedArtworkFileName(request.label, mimeType), { type: mimeType });
+    return {
+      key: normalizeName(request.label),
+      label: request.label,
+      front: file,
+      back: null,
+      frontExplicit: false,
+      generated: true,
+      selectionIds: request.targets.map(target => target.selectionId),
+      provider: response.headers.get('X-OPR-AI-Provider') || '',
+    };
+  }
+
+  async function fetchFactionVisualReference(factionName) {
+    const params = new URLSearchParams({ faction: factionName || '' });
+    try {
+      const response = await fetch(`/api/faction-reference?${params.toString()}`);
+      if (!response.ok) return '';
+      const payload = await response.json();
+      return String(payload.summary || '').replace(/\s+/g, ' ').trim().slice(0, 900);
+    } catch {
+      return '';
+    }
   }
 
   function mergeWeapons(units) {
@@ -735,10 +966,12 @@
   }
 
   function dimensions(entry) {
-    const preset = PRESETS[entry.size];
+    const preset = PRESETS[entry.size] || PRESETS.xl;
     const raster = RASTER;
-    const stripLength = preset.faceSpan / raster.faceShare;
-    return { ...preset, ...raster, stripLength, stripHeight: preset.stripHeight };
+    const faceSpan = preset.faceSpan * MINI_SCALE;
+    const stripHeight = preset.stripHeight * MINI_SCALE;
+    const stripLength = faceSpan / raster.faceShare;
+    return { ...preset, ...raster, faceSpan, stripLength, stripHeight };
   }
 
   // Guillotine-Packer nach dem Prinzip von Monsterforge: größte Elemente zuerst,
@@ -764,6 +997,21 @@
         ...size,
         placements: [],
         free: [{ x: PAGE.margin, y: PAGE.margin, width: size.printable.width, height: size.printable.height }],
+      };
+    }
+
+    function fitDimensionsToA4(d) {
+      // The enlarged XL preset can be a little wider than the printable
+      // landscape area. Shrink only as much as necessary and keep every
+      // dimension proportional, so the complete strip remains on one page.
+      const printable = pageSize('landscape').printable;
+      const factor = Math.min(1, printable.width / d.stripLength, printable.height / d.stripHeight);
+      if (factor >= 1) return d;
+      return {
+        ...d,
+        faceSpan: d.faceSpan * factor,
+        stripLength: d.stripLength * factor,
+        stripHeight: d.stripHeight * factor,
       };
     }
 
@@ -798,7 +1046,7 @@
     }
 
     const sortedEntries = entries
-      .map(entry => ({ entry, dimensions: dimensions(entry) }))
+      .map(entry => ({ entry, dimensions: fitDimensionsToA4(dimensions(entry)) }))
       .sort((a, b) => (Math.max(b.dimensions.stripLength, b.dimensions.stripHeight) - Math.max(a.dimensions.stripLength, a.dimensions.stripHeight))
         || (b.dimensions.stripLength * b.dimensions.stripHeight - a.dimensions.stripLength * a.dimensions.stripHeight));
 
@@ -872,6 +1120,8 @@
     // Felder als Zeilen statt als Lasche | Front | Rückseite | Lasche angelegt.
     element.style.setProperty('--tab-fr', `${d.tabFr}fr`);
     element.style.setProperty('--face-fr', `${d.faceFr}fr`);
+    element.classList.toggle('ai-generated', Boolean(entry.generated));
+    if (entry.generated && entry.provider) element.title = `Artwork generiert von ${entry.provider}`;
     element.style.left = `${x}mm`;
     element.style.top = `${y}mm`;
     element.querySelector('.glue-left .fold-label').textContent = entry.label;
@@ -920,6 +1170,19 @@
     assetUrls = new Map();
   }
 
+  function finishImport(army, records, armyBook, extraMessages = []) {
+    const { entries, messages } = buildEntries(army, records, armyBook);
+    loadedArmy = army;
+    loadedArmyBook = armyBook;
+    loadedEntries = entries;
+    loadedCards = buildArmyCards(army, armyBook);
+    loadMessages = [...extraMessages, ...messages];
+    renderArtworkAttribution(records);
+    renderCards(loadedCards, loadedArmyBook);
+    cardsButton.disabled = !loadedCards.length;
+    rebuildLayout();
+  }
+
   async function fetchArmyBook(army) {
     const params = new URLSearchParams({ armyId: army.armyId, gameSystem: army.gameSystem });
     const response = await fetch(`/api/army-book?${params.toString()}`);
@@ -930,6 +1193,8 @@
   async function loadFiles(fileList) {
     const files = [...fileList];
     clearArtworkAssets();
+    setAiStatus('');
+    renderArtworkAttribution([]);
     const exportFile = await readArmyForgeExport(files);
     if (!exportFile) {
       emitWarnings(['Kein gültiger ArmyForge-Export gefunden. Die JSON-Datei muss ein Feld „list.units“ enthalten.']);
@@ -945,24 +1210,112 @@
     } catch {
       allMessages.push('Armeebuchdaten konnten nicht geladen werden. Bitte starte die App mit „node server.js“ und öffne http://127.0.0.1:4173/.');
     }
-    const { entries, messages } = buildEntries(exportFile.data, records, armyBook);
-    allMessages.push(...messages);
     if (invalid.length) allMessages.unshift(`${invalid.length} Bilddatei(en) konnten nicht gelesen werden.`);
-    loadedArmy = exportFile.data;
-    loadedArmyBook = armyBook;
-    loadedEntries = entries;
-    loadedCards = buildArmyCards(exportFile.data, armyBook);
-    loadMessages = allMessages;
-    renderCards(loadedCards, loadedArmyBook);
-    cardsButton.disabled = !loadedCards.length;
-    rebuildLayout();
+    finishImport(exportFile.data, records, armyBook, allMessages);
+  }
+
+  async function loadJsonWithAi(fileList) {
+    if (!aiJsonInput) return;
+    aiJsonInput.disabled = true;
+    warnings.replaceChildren();
+    renderArtworkAttribution([]);
+    setAiStatus('ArmyForge-JSON wird gelesen …', 'working');
+    try {
+      const exportFile = await readArmyForgeExport([...fileList]);
+      if (!exportFile) throw new Error('Kein gültiger ArmyForge-Export gefunden. Die JSON-Datei muss ein Feld „list.units“ enthalten.');
+      setAiStatus('Armeebuchdaten werden von ArmyForge geladen …', 'working');
+      const armyBook = await fetchArmyBook(exportFile.data);
+      setAiStatus('Kurzer OPR-Fraktionscheck wird durchgeführt …', 'working');
+      const visualReference = await fetchFactionVisualReference(exportFile.data.armyName || armyBook.name || '');
+      const requests = buildAiArtworkRequests(exportFile.data, armyBook, visualReference);
+      if (!requests.length) throw new Error('Im Export wurden keine passenden Einheiten im Armeebuch gefunden.');
+
+      let configuredProviders = [];
+      try {
+        const statusResponse = await fetch('/api/ai-status');
+        if (statusResponse.ok) configuredProviders = (await statusResponse.json()).providers || [];
+      } catch {
+        // Generation below returns the actionable server error if the status
+        // endpoint is unavailable, so a separate status failure is harmless.
+      }
+      if (!configuredProviders.length) {
+        throw new Error('Keine KI-Provider konfiguriert. Lege ai-keys.json neben server.js an und trage mindestens einen gültigen kostenlosen API-Key ein.');
+      }
+
+      const generatedRecords = [];
+      const generationMessages = [];
+      setAiStatus(`${requests.length} Artwork(s) werden nacheinander erzeugt · Reihenfolge: ${configuredProviders.join(' → ')}`, 'working');
+      for (let index = 0; index < requests.length; index += 1) {
+        const request = requests[index];
+        setAiStatus(`Artwork ${index + 1} von ${requests.length}: ${request.label} wird erzeugt …`, 'working');
+        try {
+          const record = await generateAiArtwork(request);
+          generatedRecords.push(record);
+          const provider = record.provider ? ` · ${record.provider}` : '';
+          setAiStatus(`${index + 1} von ${requests.length} Artwork(s) erzeugt${provider}`, 'working');
+        } catch (error) {
+          generationMessages.push(`${request.label}: Kein KI-Bild erzeugt – ${error.message}`);
+        }
+      }
+
+      const preparedRecords = await prepareArtworkRecords(generatedRecords);
+      if (generationMessages.length) {
+        setAiStatus(`${generatedRecords.length} von ${requests.length} Artwork(s) erzeugt · fehlgeschlagene Einheiten werden als Platzhalter markiert.`, 'error');
+      } else {
+        setAiStatus(`${generatedRecords.length} von ${requests.length} Artwork(s) erzeugt.`, 'success');
+      }
+      finishImport(exportFile.data, preparedRecords, armyBook, generationMessages);
+    } catch (error) {
+      setAiStatus(error.message || 'Die KI-Erzeugung ist fehlgeschlagen.', 'error');
+      emitWarnings([error.message || 'Die KI-Erzeugung ist fehlgeschlagen.']);
+    } finally {
+      aiJsonInput.disabled = false;
+    }
   }
 
   function handleFiles(files) {
     if (files?.length) loadFiles(files);
   }
 
-  folderInput.addEventListener('change', event => handleFiles(event.target.files));
+  async function readDirectoryFiles(directoryHandle) {
+    const files = [];
+    async function walk(handle) {
+      for await (const item of handle.values()) {
+        if (item.kind === 'file') files.push(await item.getFile());
+        else if (item.kind === 'directory') await walk(item);
+      }
+    }
+    await walk(directoryHandle);
+    return files;
+  }
+
+  async function chooseFolder() {
+    // Chromium's File System Access API reads the directory locally and avoids
+    // the browser's multi-file "upload these files" confirmation dialog. The
+    // hidden input remains as a fallback for browsers without this API.
+    if (typeof window.showDirectoryPicker !== 'function') {
+      folderInput.click();
+      return;
+    }
+    try {
+      const directory = await window.showDirectoryPicker({ mode: 'read' });
+      const files = await readDirectoryFiles(directory);
+      handleFiles(files);
+    } catch (error) {
+      if (error?.name === 'AbortError') return;
+      emitWarnings([`Ordner konnte nicht gelesen werden: ${error?.message || 'unbekannter Fehler'}`]);
+    }
+  }
+
+  folderInput.addEventListener('change', event => {
+    handleFiles(event.target.files);
+    event.target.value = '';
+  });
+  folderButton?.addEventListener('click', chooseFolder);
+  aiJsonInput?.addEventListener('change', event => {
+    if (event.target.files?.length) loadJsonWithAi(event.target.files);
+    event.target.value = '';
+  });
   ['dragenter', 'dragover'].forEach(type => dropZone.addEventListener(type, event => {
     event.preventDefault();
     dropZone.classList.add('is-dragging');
@@ -973,7 +1326,11 @@
   }));
   dropZone.addEventListener('drop', event => handleFiles(event.dataTransfer.files));
   dropZone.addEventListener('keydown', event => {
-    if (event.key === 'Enter' || event.key === ' ') folderInput.click();
+    if (event.target !== dropZone) return;
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      chooseFolder();
+    }
   });
   cardsButton.addEventListener('click', () => {
     const nextVisible = cardsPanel.hidden;

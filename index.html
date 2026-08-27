@@ -19,15 +19,19 @@
 
     <main class="app-shell">
       <div id="drop-zone" class="drop-zone" tabindex="0" role="button" aria-label="Dateien hier ablegen oder auswählen">
-        <strong>Ordner mit Aufstellung und Artworks ablegen</strong>
-        <span>Der Ordner enthält ein ArmyForge-JSON und die passenden Token-Artworks. Jeder Bild-Dateiname muss dem Einheitsnamen entsprechen, z. B. „Dwarf Warriors.png“.</span>
+        <strong>Ordner ablegen oder JSON mit KI generieren</strong>
+        <span>Ordner: ArmyForge-JSON und Artworks · JSON + KI: Artworks automatisch erzeugen lassen</span>
         <div class="file-actions">
-          <label class="button secondary">Ordner wählen<input id="folder-input" type="file" webkitdirectory multiple hidden /></label>
+          <button id="folder-button" class="button secondary" type="button">Ordner wählen</button>
+          <input id="folder-input" type="file" webkitdirectory multiple hidden />
+          <label class="button primary">JSON + KI<input id="ai-json-input" type="file" accept="application/json,.json" hidden /></label>
         </div>
+        <div id="ai-status" class="ai-status" aria-live="polite"></div>
       </div>
 
       <section class="layout-panel">
         <div id="warnings" class="warnings" aria-live="polite"></div>
+        <div id="artwork-attribution" class="artwork-attribution" aria-live="polite"></div>
         <div id="layout-output" class="layout-output">
           <div class="empty-state">
             <h3>Bereit für deine Minis</h3>

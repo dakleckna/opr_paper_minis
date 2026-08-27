@@ -9,6 +9,8 @@ const PORT = Number(process.env.OPR_PORT) || 4173;
 const ROOT = __dirname;
 const AI_KEYS_PATH = path.join(ROOT, 'ai-keys.json');
 const PROVIDER_COOLDOWNS = new Map();
+const PROVIDER_PROMPT_MAX_CHARS = 1800;
+const PROVIDER_PRIORITY = ['gemini', 'huggingface'];
 const STATIC_FILES = new Map([
   ['/', 'index.html'],
   ['/index.html', 'index.html'],
@@ -55,7 +57,17 @@ function loadAiProviders() {
   try {
     const config = JSON.parse(fs.readFileSync(AI_KEYS_PATH, 'utf8'));
     if (!Array.isArray(config.providers)) return [];
-    return config.providers.filter(provider => provider && provider.enabled !== false && typeof provider.type === 'string');
+    return config.providers
+      .filter(provider => provider && provider.enabled !== false && typeof provider.type === 'string')
+      .map((provider, index) => ({ provider, index }))
+      .sort((left, right) => {
+        const leftRank = PROVIDER_PRIORITY.indexOf(left.provider.type);
+        const rightRank = PROVIDER_PRIORITY.indexOf(right.provider.type);
+        const normalizedLeft = leftRank < 0 ? PROVIDER_PRIORITY.length : leftRank;
+        const normalizedRight = rightRank < 0 ? PROVIDER_PRIORITY.length : rightRank;
+        return normalizedLeft - normalizedRight || left.index - right.index;
+      })
+      .map(item => item.provider);
   } catch {
     return [];
   }
@@ -72,6 +84,14 @@ function providerKey(provider) {
   return `${provider.type}:${provider.model || ''}`;
 }
 
+function providerSafePrompt(prompt) {
+  const text = String(prompt || '').replace(/\s+/g, ' ').trim();
+  if (text.length <= PROVIDER_PROMPT_MAX_CHARS) return text;
+  const headLength = 1240;
+  const tailLength = PROVIDER_PROMPT_MAX_CHARS - headLength - 24;
+  return `${text.slice(0, headLength)} … [constraints continue] … ${text.slice(-tailLength)}`;
+}
+
 async function responseError(provider, response) {
   const rawBody = await response.text();
   let detail = rawBody;
@@ -81,7 +101,7 @@ async function responseError(provider, response) {
   } catch {
     // Some providers return plain-text errors. Keep the original message in that case.
   }
-  detail = String(detail).replace(/\s+/g, ' ').trim().slice(0, 90);
+  detail = String(detail).replace(/\s+/g, ' ').trim().slice(0, 180);
   throw new Error(`${provider.type}: HTTP ${response.status}${detail ? ` (${detail})` : ''}`);
 }
 
@@ -93,7 +113,12 @@ async function generateWithGemini(provider, prompt) {
     headers: { 'x-goog-api-key': provider.apiKey, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { responseModalities: ['IMAGE'] },
+      generationConfig: {
+        responseModalities: ['IMAGE'],
+        // Keep Gemini outputs portrait as requested by the artwork prompt;
+        // the browser rotates them back into the stable v1 strip orientation.
+        responseFormat: { image: { aspectRatio: '2:3' } },
+      },
     }),
   });
   if (!upstream.ok) await responseError(provider, upstream);
@@ -166,7 +191,7 @@ async function generateArtwork(prompt) {
       if (/HTTP (?:401|403|429)\b/.test(message)) {
         PROVIDER_COOLDOWNS.set(providerKey(provider), Date.now() + 5 * 60 * 1000);
       }
-      errors.push(message.slice(0, 130));
+      errors.push(message.slice(0, 220));
     }
   }
   throw new Error(`Alle KI-Provider waren nicht verfügbar. ${errors.join(' | ')}`);
@@ -193,6 +218,58 @@ async function proxyArmyBook(requestUrl, response) {
   }
 }
 
+function factionSlug(value) {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLocaleLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80);
+}
+
+function decodeHtml(value) {
+  return String(value || '')
+    .replace(/&amp;/gi, '&')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>');
+}
+
+async function proxyFactionReference(requestUrl, response) {
+  const faction = requestUrl.searchParams.get('faction') || '';
+  const slug = factionSlug(faction);
+  if (!slug) {
+    send(response, 400, 'Ungültige Fraktion.');
+    return;
+  }
+  const sourceUrl = `https://www.onepagerules.com/factions/${slug}`;
+  try {
+    const upstreamResponse = await fetch(sourceUrl, { signal: AbortSignal.timeout(5000) });
+    if (!upstreamResponse.ok) {
+      send(response, 200, JSON.stringify({ sourceUrl, summary: '' }), 'application/json; charset=utf-8');
+      return;
+    }
+    const html = await upstreamResponse.text();
+    const metaMatch = html.match(/<meta[^>]+name=["']description["'][^>]+content=["']([^"']+)["'][^>]*>/i)
+      || html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+name=["']description["'][^>]*>/i);
+    const fallbackText = html
+      .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+      .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    const summary = decodeHtml(metaMatch?.[1] || fallbackText).slice(0, 900);
+    send(response, 200, JSON.stringify({ sourceUrl, summary }), 'application/json; charset=utf-8');
+  } catch {
+    // A visual reference is helpful but must never block image generation when
+    // the official site is offline or a custom faction has no page.
+    send(response, 200, JSON.stringify({ sourceUrl, summary: '' }), 'application/json; charset=utf-8');
+  }
+}
+
 async function generateArt(request, response) {
   try {
     const payload = await readRequestJson(request);
@@ -201,7 +278,7 @@ async function generateArt(request, response) {
       send(response, 400, 'Ungültiger Bild-Prompt.');
       return;
     }
-    const image = await generateArtwork(prompt);
+    const image = await generateArtwork(providerSafePrompt(prompt));
     send(response, 200, image.data, image.mimeType, { 'X-OPR-AI-Provider': image.provider });
   } catch (error) {
     send(response, 503, error.message || 'Die Bildgenerierung ist fehlgeschlagen.');
@@ -212,6 +289,10 @@ http.createServer(async (request, response) => {
   const requestUrl = new URL(request.url, `http://${HOST}:${PORT}`);
   if (request.method === 'GET' && requestUrl.pathname === '/api/army-book') {
     await proxyArmyBook(requestUrl, response);
+    return;
+  }
+  if (request.method === 'GET' && requestUrl.pathname === '/api/faction-reference') {
+    await proxyFactionReference(requestUrl, response);
     return;
   }
   if (request.method === 'GET' && requestUrl.pathname === '/api/ai-status') {
