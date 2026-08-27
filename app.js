@@ -6,6 +6,10 @@
   // factor so every derived dimension remains proportional.
   const MINI_SCALE = 1.2;
   const ART_PADDING = 1.25 * MINI_SCALE;
+  // A failed AI request contains one short diagnostic per configured provider.
+  // Keep enough of the response visible to show the complete fallback chain
+  // instead of cutting it off after the first provider.
+  const AI_ERROR_MAX_CHARS = 1000;
   // Stable Version 1 print geometry. The four panels are deliberately kept
   // at these physical dimensions; the artwork is fitted inside the panels,
   // never used to derive a new strip size.
@@ -19,11 +23,16 @@
   // Fester Aufbau: 12,5 % Lasche | 37,5 % Vorderseite | 37,5 % Rückseite | 12,5 % Lasche.
   const RASTER = { faceShare: .375, tabFr: 1, faceFr: 3 };
   const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/svg+xml']);
+  // GitHub Pages can serve the browser UI, but it cannot safely expose the
+  // local Node proxy or AI keys. Keep the full JSON + AI flow available for
+  // the local server and use a static, browser-only mode on github.io.
+  const IS_GITHUB_PAGES = /(?:^|\.)github\.io$/i.test(window.location.hostname);
   const output = document.querySelector('#layout-output');
   const warnings = document.querySelector('#warnings');
   const folderInput = document.querySelector('#folder-input');
   const folderButton = document.querySelector('#folder-button');
   const aiJsonInput = document.querySelector('#ai-json-input');
+  const aiButton = document.querySelector('#ai-button');
   const aiStatus = document.querySelector('#ai-status');
   const dropZone = document.querySelector('#drop-zone');
   const artworkAttribution = document.querySelector('#artwork-attribution');
@@ -354,13 +363,15 @@
     const messages = [];
     const usedArtwork = new Set();
 
-    for (const selection of army.list.units) {
+    for (const [selectionIndex, selection] of army.list.units.entries()) {
       const unit = unitsById.get(selection.id);
       const name = unit?.name || selection.id;
+      const selectionKey = selection.selectionId || `${selection.id || 'unit'}:${selectionIndex}`;
       // AI-generated variants can share the same display name while using
       // different selected weapons. Match their originating selection first;
       // regular folder imports continue to use the filename/name lookup.
-      const record = artworkRecords.find(candidate => candidate.selectionIds?.includes(selection.selectionId))
+      const record = artworkRecords.find(candidate => candidate.selectionKeys?.includes(selectionKey))
+        || artworkRecords.find(candidate => candidate.selectionIds?.includes(selection.selectionId))
         || artworkByName.get(normalizeName(selection.selectionId))
         || artworkByName.get(normalizeName(selection.customName || ''))
         || artworkByName.get(normalizeName(name))
@@ -383,7 +394,7 @@
           size,
           copy,
           baseReferenceMm: baseMm,
-          id: `${selection.selectionId}-${copy}`,
+          id: `${selectionKey}-${copy}`,
           selectionId: selection.selectionId,
           unitId: selection.id,
         });
@@ -521,36 +532,73 @@
     return cardUnit;
   }
 
-  function aiArtworkSignature(unit) {
-    return JSON.stringify({
-      unitId: unit.unitId,
-      weapons: unit.weapons.map(weapon => [weapon.name, weapon.count, weapon.range, weapon.attacks, weapon.specialRules]),
-      rules: unit.rules.map(ruleIdentity),
-    });
-  }
+  // Cloudflare accepts prompts up to 2048 characters. Keep the dynamic unit
+  // information at the beginning and the safety/format constraints at the end
+  // so both survive when a provider-safe limit is needed.
+  const AI_PROMPT_MAX_CHARS = 2048;
+  // The editable source of truth lives in AI_ARTWORK_PROMPT.md. This compact
+  // fallback keeps the AI import usable when the app is opened without the
+  // local server or when the Markdown file cannot be fetched.
+  const DEFAULT_AI_PROMPT_TEMPLATE = [
+    'Create exactly one isolated full-body 2D character or vehicle concept illustration for a game roster. This is a flat artwork asset only, never a physical tabletop miniature, painted plastic/resin model, product photo, 3D render, printable token, paper standee, or cut-out.',
+    'Faction: {{FACTION}}. Unit: {{UNIT}}.',
+    'Mandatory equipment from the ArmyForge JSON: {{EQUIPMENT}}. Special rules and visual cues: {{ABILITIES}}. Keywords: {{KEYWORDS}}.',
+    'Use this official faction reference as visual guidance when available: {{VISUAL_REFERENCE}}.',
+    'Style: strong even black contours, polished 2D comic/cel-shading, crisp edges, clear readable silhouette, detailed but not overloaded armor and weapons matching every listed item.',
+    'Use faction-appropriate colors, including dirty/muted or vivid palettes when appropriate; avoid an almost monochrome black/grey result unless explicitly required.',
+    'Show one complete representative individual only, even when the unit name is plural. Use a frontal or slight three-quarter view, an approximately 2:3 portrait composition, a naturally tall and narrow subject, and fill about 80–90% of the canvas height.',
+    'Keep feet, wheels, and the lowest contact point fully visible with an even margin. Use a transparent background; if unavailable, use pure white. No floor line, terrain, scenery, base, stand, cast shadow, smoke, text, letters, numbers, symbols, logo, frame, watermark, cropped parts, duplicates, or background gradient. All names and labels in this prompt are invisible metadata and must never appear in the image.',
+    'Use references as inspiration only; do not copy a reference image, named artist, or franchise.',
+  ].join(' ');
 
-  // Cloudflare's image models reject long prompt payloads. Keep the dynamic
-  // unit information at the beginning and the safety/format constraints at
-  // the end so both survive when a provider-safe limit is needed.
-  const AI_PROMPT_MAX_CHARS = 1800;
   function providerSafeAiPrompt(prompt) {
     const text = String(prompt || '').replace(/\s+/g, ' ').trim();
     if (text.length <= AI_PROMPT_MAX_CHARS) return text;
-    const headLength = 1240;
-    const tailLength = AI_PROMPT_MAX_CHARS - headLength - 24;
-    return `${text.slice(0, headLength)} … [constraints continue] … ${text.slice(-tailLength)}`;
+    const separator = ' … [constraints continue] … ';
+    const available = Math.max(0, AI_PROMPT_MAX_CHARS - separator.length);
+    const headLength = Math.min(1240, Math.ceil(available * .62));
+    const tailLength = available - headLength;
+    return `${text.slice(0, headLength)}${separator}${text.slice(-tailLength)}`;
   }
 
-  function buildAiArtworkRequests(army, armyBook, visualReference = '') {
+  function renderAiPromptTemplate(template, values) {
+    const source = String(template || DEFAULT_AI_PROMPT_TEMPLATE);
+    return source.replace(/\{\{([A-Z_]+)\}\}/g, (_, key) => String(values[key] ?? '').trim());
+  }
+
+  async function fetchAiPromptTemplate() {
+    try {
+      // Relative URLs also work for project Pages sites such as
+      // /opr_paper_minis/, whereas an absolute /AI_ARTWORK_PROMPT.md would
+      // incorrectly point at the domain root.
+      const response = await fetch('AI_ARTWORK_PROMPT.md', { cache: 'no-store' });
+      if (!response.ok) return DEFAULT_AI_PROMPT_TEMPLATE;
+      const markdown = await response.text();
+      // The Markdown file also documents its placeholders. Send only the
+      // actual template section to providers, not that documentation.
+      const marker = /(?:^|\n)## Template\s*\n/i.exec(markdown);
+      const template = marker ? markdown.slice(marker.index + marker[0].length) : markdown;
+      return template.includes('{{UNIT}}') && template.includes('{{EQUIPMENT}}')
+        ? template.trim()
+        : DEFAULT_AI_PROMPT_TEMPLATE;
+    } catch {
+      return DEFAULT_AI_PROMPT_TEMPLATE;
+    }
+  }
+
+  function buildAiArtworkRequests(army, armyBook, visualReference = '', promptTemplate = DEFAULT_AI_PROMPT_TEMPLATE) {
     const unitsById = new Map((armyBook?.units || []).map(unit => [unit.id, unit]));
     const optionIndex = createUpgradeOptionIndex(armyBook);
     const requests = new Map();
-    (army.list.units || []).forEach(selection => {
+    (army.list.units || []).forEach((selection, selectionIndex) => {
       const baseUnit = unitsById.get(selection.id);
       if (!baseUnit) return;
       const unit = applySelectionUpgrades(selection, baseUnit, optionIndex);
-      const signature = aiArtworkSignature(unit);
-      if (!requests.has(signature)) {
+      // Keep one generation per ArmyForge selection. Two selections can have
+      // identical equipment but still represent distinct units in the list.
+      const selectionKey = selection.selectionId || `${selection.id || 'unit'}:${selectionIndex}`;
+      const requestKey = selectionKey;
+      if (!requests.has(requestKey)) {
         const equipment = unit.weapons.map(weapon => {
           const count = Number(weapon.count) > 1 ? `${weapon.count}x ` : '';
           const details = [];
@@ -568,33 +616,24 @@
         const equipmentText = equipment.slice(0, 420);
         const abilitiesText = abilities.slice(0, 280);
         const keywordsText = keywords.slice(0, 160);
-        const prompt = [
-          'Create one standalone full-body 2D character or vehicle illustration only. This is concept artwork, not a paper miniature, printable token, cut-out, product photo, painted plastic/resin figure, tabletop miniature, or 3D render.',
-          `Faction: ${(army.armyName || armyBook.name || 'unknown faction').toString().slice(0, 120)}.`,
-          `Unit: ${baseUnit.name}.`,
-          `Equipment that must be visibly represented: ${equipmentText || 'standard equipment'}.`,
-          `Special rules and visual cues: ${abilitiesText || 'none'}.`,
-          keywordsText ? `Keywords: ${keywordsText}.` : '',
-          reference ? `Official OPR faction reference summary: ${reference}.` : 'Use the named OPR/ArmyForge faction as a short visual reference for its usual shapes, materials, markings, and color family when known.',
-          'Style: strong, even black contours; polished 2D comic/cel-shading; crisp edges; clear readable silhouette.',
-          'Armor and weapons must be detailed but not overloaded and must match the listed equipment.',
-          'Use faction-appropriate colors, including dirty/muted or vivid palettes when appropriate; no universal palette.',
-          'Avoid an almost monochrome black/grey result; use distinct body, armor, and accent colors with readable contrast unless the faction reference explicitly requires monochrome.',
-          'Exactly one complete subject. If the unit name is plural or contains several models, show one representative individual only, never a squad or multiple subjects.',
-          'Frontal or slight three-quarter portrait, approximately 2:3 (never square). Keep the subject naturally tall and narrow for a folded paper strip (roughly 3–4 times taller than wide), not a broad square composition. Let the subject fill about 80–90% of the canvas height, center it with an even margin, and show feet, wheels, and the lowest contact point fully.',
-          'White or transparent background; if transparency is unavailable, use pure white, never a black or grey studio gradient. No floor line.',
-          'No terrain, scenery, display stand, circular base, cast shadow, smoke, text, logo, frame, watermark, cropped parts, duplicates, or real physical miniature.',
-          'Use references as inspiration only; never copy a reference image or imitate a named artist or franchise.',
-        ].filter(Boolean).join(' ');
-        requests.set(signature, {
+        const prompt = renderAiPromptTemplate(promptTemplate, {
+          FACTION: (army.armyName || armyBook.name || 'unknown faction').toString().slice(0, 120),
+          UNIT: String(baseUnit.name || unit.name || 'Unknown unit').slice(0, 160),
+          EQUIPMENT: equipmentText || 'standard equipment',
+          ABILITIES: abilitiesText || 'none',
+          KEYWORDS: keywordsText || 'none',
+          VISUAL_REFERENCE: reference || 'Use the named OPR/ArmyForge faction as a short visual reference for its usual shapes, materials, markings, and color family when known.',
+        });
+        requests.set(requestKey, {
           id: `generated-${requests.size + 1}`,
           label: baseUnit.name,
           targets: [],
           prompt: providerSafeAiPrompt(prompt),
         });
       }
-      requests.get(signature).targets.push({
+      requests.get(requestKey).targets.push({
         selectionId: selection.selectionId,
+        selectionKey,
         label: unit.name,
       });
     });
@@ -619,7 +658,7 @@
     });
     if (!response.ok) {
       const detail = (await response.text()).replace(/\s+/g, ' ').trim();
-      throw new Error(`HTTP ${response.status}${detail ? ` – ${detail.slice(0, 180)}` : ''}`);
+      throw new Error(`HTTP ${response.status}${detail ? ` – ${detail.slice(0, AI_ERROR_MAX_CHARS)}` : ''}`);
     }
     const blob = await response.blob();
     const mimeType = blob.type || response.headers.get('content-type')?.split(';')[0] || 'image/png';
@@ -633,6 +672,7 @@
       frontExplicit: false,
       generated: true,
       selectionIds: request.targets.map(target => target.selectionId),
+      selectionKeys: request.targets.map(target => target.selectionKey),
       provider: response.headers.get('X-OPR-AI-Provider') || '',
     };
   }
@@ -1185,9 +1225,23 @@
 
   async function fetchArmyBook(army) {
     const params = new URLSearchParams({ armyId: army.armyId, gameSystem: army.gameSystem });
-    const response = await fetch(`/api/army-book?${params.toString()}`);
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    return response.json();
+    const localProxy = `/api/army-book?${params.toString()}`;
+    const directArmyForge = `https://army-forge.onepagerules.com/api/army-books/${encodeURIComponent(army.armyId)}?gameSystem=${encodeURIComponent(army.gameSystem)}`;
+    const candidates = IS_GITHUB_PAGES ? [directArmyForge] : [localProxy];
+    let lastError = null;
+    for (const url of candidates) {
+      try {
+        const response = await fetch(url, { cache: 'no-store', mode: 'cors' });
+        if (!response.ok) {
+          lastError = new Error(`HTTP ${response.status}`);
+          continue;
+        }
+        return response.json();
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    throw lastError || new Error('ArmyForge-Daten konnten nicht geladen werden.');
   }
 
   async function loadFiles(fileList) {
@@ -1208,14 +1262,16 @@
     try {
       armyBook = await fetchArmyBook(exportFile.data);
     } catch {
-      allMessages.push('Armeebuchdaten konnten nicht geladen werden. Bitte starte die App mit „node server.js“ und öffne http://127.0.0.1:4173/.');
+      allMessages.push(IS_GITHUB_PAGES
+        ? 'ArmyForge-Armeebuchdaten konnten im Browser nicht geladen werden. Falls dein Browser den direkten Zugriff wegen CORS blockiert, nutze die lokale start.bat-Version; dort bleiben Armeebuchdaten, exakte Größen und Cards vollständig verfügbar.'
+        : 'Armeebuchdaten konnten nicht geladen werden. Bitte starte die App mit „node server.js“ und öffne http://127.0.0.1:4173/.');
     }
     if (invalid.length) allMessages.unshift(`${invalid.length} Bilddatei(en) konnten nicht gelesen werden.`);
     finishImport(exportFile.data, records, armyBook, allMessages);
   }
 
   async function loadJsonWithAi(fileList) {
-    if (!aiJsonInput) return;
+    if (!aiJsonInput || IS_GITHUB_PAGES) return;
     aiJsonInput.disabled = true;
     warnings.replaceChildren();
     renderArtworkAttribution([]);
@@ -1227,12 +1283,14 @@
       const armyBook = await fetchArmyBook(exportFile.data);
       setAiStatus('Kurzer OPR-Fraktionscheck wird durchgeführt …', 'working');
       const visualReference = await fetchFactionVisualReference(exportFile.data.armyName || armyBook.name || '');
-      const requests = buildAiArtworkRequests(exportFile.data, armyBook, visualReference);
+      setAiStatus('Zentrale KI-Prompt-Vorlage wird geladen …', 'working');
+      const promptTemplate = await fetchAiPromptTemplate();
+      const requests = buildAiArtworkRequests(exportFile.data, armyBook, visualReference, promptTemplate);
       if (!requests.length) throw new Error('Im Export wurden keine passenden Einheiten im Armeebuch gefunden.');
 
       let configuredProviders = [];
       try {
-        const statusResponse = await fetch('/api/ai-status');
+        const statusResponse = await fetch('/api/ai-status?newRun=1');
         if (statusResponse.ok) configuredProviders = (await statusResponse.json()).providers || [];
       } catch {
         // Generation below returns the actionable server error if the status
@@ -1307,6 +1365,19 @@
     }
   }
 
+  function configureRuntimeMode() {
+    if (!IS_GITHUB_PAGES) return;
+    document.body.classList.add('github-pages');
+    aiButton?.remove();
+    aiJsonInput?.remove();
+    aiStatus?.remove();
+    const title = dropZone?.querySelector('strong');
+    if (title) title.textContent = 'Ordner mit ArmyForge-JSON und Artworks auswählen';
+    const description = dropZone?.querySelector(':scope > span');
+    if (description) description.textContent = 'GitHub Pages: Ordner-Import, Mini-Raster, Cards und PDF-Druck · KI nur lokal';
+  }
+
+  configureRuntimeMode();
   folderInput.addEventListener('change', event => {
     handleFiles(event.target.files);
     event.target.value = '';
