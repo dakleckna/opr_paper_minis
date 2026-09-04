@@ -1378,9 +1378,9 @@
     try {
       armyBook = await fetchArmyBook(exportFile.data);
     } catch {
-      allMessages.push(IS_GITHUB_PAGES
-        ? 'ArmyForge-Armeebuchdaten konnten im Browser nicht geladen werden. Falls dein Browser den direkten Zugriff wegen CORS blockiert, nutze die lokale start.bat-Version; dort bleiben Armeebuchdaten, exakte Größen und Cards vollständig verfügbar.'
-        : 'Armeebuchdaten konnten nicht geladen werden. Bitte starte die App mit „node server.js“ und öffne http://127.0.0.1:4173/.');
+      if (!IS_GITHUB_PAGES) {
+        allMessages.push('Armeebuchdaten konnten nicht geladen werden. Bitte starte die App mit „node server.js“ und öffne http://127.0.0.1:4173/.');
+      }
     }
     if (invalid.length) allMessages.unshift(`${invalid.length} Bilddatei(en) konnten nicht gelesen werden.`);
     finishImport(exportFile.data, records, armyBook, allMessages);
