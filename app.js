@@ -1517,7 +1517,7 @@
     uploadMenuWrap?.remove();
     if (pagesUploadActions) pagesUploadActions.hidden = false;
     const title = dropZone?.querySelector('strong');
-    if (title) title.textContent = 'ArmyForge-JSON oder JSON mit Artwork hochladen';
+    title?.remove();
     const description = dropZone?.querySelector(':scope > span');
     description?.remove();
   }
