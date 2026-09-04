@@ -8,12 +8,14 @@ Lokale Druckvorlage für ArmyForge-Aufstellungen.
 
 ## Import
 
-- **Ordner wählen:** ArmyForge-JSON und vorhandene Artworks gemeinsam auswählen. Der Ordner wird lokal gelesen; ein Bild ohne Seitenkennung gilt als Vorderseite und die Rückseite wird automatisch gespiegelt.
+- **Upload:** Über das Upload-Menü entweder eine einzelne ArmyForge-JSON-Datei oder einen kompletten Ordner mit JSON und vorhandenen Artworks auswählen. Ein Bild ohne Seitenkennung gilt als Vorderseite und die Rückseite wird automatisch gespiegelt.
 - **JSON + KI:** Nur das ArmyForge-JSON auswählen. Die benötigten Einheiten werden nacheinander über die in `ai-keys.json` eingetragenen Provider erzeugt. Die Reihenfolge ist fest: zuerst Gemini, danach Hugging Face, danach alle weiteren Provider in ihrer Konfigurationsreihenfolge. Bei Fehlern oder erschöpfter Quote wird automatisch weitergeschaltet.
 
 Vor der Bildgenerierung wird die offizielle OPR-Fraktionsseite kurz nach einer visuellen Beschreibung (Formen, Materialien und Farbwelt) geprüft. Ist die Seite nicht erreichbar oder handelt es sich um eine Community-Fraktion, läuft die Generierung ohne diesen Zusatz weiter.
 
 Die vollständige, englische Prompt-Basis liegt in `AI_ARTWORK_PROMPT.md`. Diese Datei ist die zentrale Vorlage und kann angepasst werden; Platzhalter für Fraktion, Unit, Ausrüstung, Fähigkeiten, Keywords und den kurzen Fraktionscheck werden beim Import automatisch ersetzt. Pro ArmyForge-Auswahl wird genau eine eigene Artwork-Anfrage erzeugt. Mehrere Exemplare derselben Auswahl verwenden anschließend dieses Artwork für die Druckwiederholungen.
+
+Beim Cards-Druck werden überlange Karten automatisch auf eine volle A4-Breite gesetzt und bei Bedarf proportional verkleinert, damit jede Karte vollständig auf einer Seite bleibt.
 
 Lege `ai-keys.json` neben `server.js` an, indem du `ai-keys_EXAMPLE.json` kopierst, und trage dort mindestens einen kostenlosen API-Key ein. Die Datei bleibt lokal und gehört nicht in Git.
 

@@ -66,6 +66,8 @@ p { line-height: 1.5; }
 .header-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 9px; }
 .header-secondary { color: #fffdf6; background: transparent; border-color: rgba(255, 253, 246, .45); }
 .header-secondary:hover:not(:disabled) { background: rgba(255, 253, 246, .12); }
+.cards-print-button { border-color: rgba(255, 253, 246, .45); }
+body:not(.cards-view) .cards-print-button { display: none !important; }
 
 .app-shell {
   max-width: 1180px;
@@ -115,6 +117,7 @@ p { line-height: 1.5; }
   box-shadow: 0 2px 3px rgba(20, 31, 42, .12);
   color: #3d4653;
 }
+.army-unit-card.wide-card { grid-column: 1 / -1; }
 .army-unit-card > h3 {
   margin: 0;
   padding: 20px 15px 8px;
@@ -199,6 +202,10 @@ body.cards-view .cards-panel { grid-column: 1; }
 .drop-zone strong { font-size: .96rem; }
 .drop-zone > span { color: var(--muted); font-size: .84rem; }
 .file-actions { margin-top: 5px; display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+.upload-menu-wrap { position: relative; }
+.upload-menu { position: absolute; z-index: 25; top: calc(100% + 6px); left: 50%; min-width: 175px; padding: 7px; display: grid; gap: 6px; transform: translateX(-50%); border: 1px solid var(--line); border-radius: 8px; background: var(--surface); box-shadow: 0 10px 24px rgba(35, 31, 24, .18); }
+.upload-menu[hidden] { display: none; }
+.upload-menu .button { width: 100%; color: var(--ink); background: #fff; border-color: var(--line); white-space: nowrap; }
 .ai-status { min-height: 1.2em; color: var(--muted); font-size: .78rem; }
 .ai-status[data-state="working"] { color: var(--teal); }
 .ai-status[data-state="success"] { color: #28734a; }
@@ -282,7 +289,7 @@ tbody th { color: var(--accent-dark); }
 .glue-right { border-left: .18mm dashed #745c4b; }
 .front-panel { border-right: .18mm dashed #745c4b; background: #fff9f1; }
 .back-panel { background: #edf6f3; }
-.fold-label { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%) rotate(-90deg); font-family: ui-monospace, monospace; font-size: 2.2mm; color: #694e3c; text-transform: uppercase; white-space: nowrap; }
+.fold-label { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%) rotate(90deg); font-family: ui-monospace, monospace; font-size: 2.2mm; color: #694e3c; text-transform: uppercase; white-space: nowrap; }
 
 .panel-art { position: absolute; inset: 0; display: block; }
 .panel-art img { position: absolute; top: 50%; left: 50%; display: block; width: var(--art-base); height: var(--art-height); object-fit: contain; object-position: center bottom; transform-origin: center; }
@@ -310,6 +317,14 @@ tbody th { color: var(--accent-dark); }
   /* Always print the full document: mini sheets first, then the cards. */
   body.cards-view .layout-panel { display: block !important; }
   #cards-panel, #cards-panel[hidden], body.cards-view .cards-panel { display: block !important; }
+  /* The dedicated cards button adds this class immediately before opening the
+     print dialog. In that mode the mini layout is omitted completely. */
+  body.print-cards-only .layout-panel,
+  body.print-cards-only .layout-panel #layout-output { display: none !important; }
+  body.print-cards-only { page: cards; }
+  body.print-cards-only #cards-panel,
+  body.print-cards-only #cards-panel[hidden],
+  body.print-cards-only .cards-panel { display: block !important; break-before: auto; page-break-before: auto; }
   .sheet-heading { display: none !important; }
   .layout-output { gap: 0; }
   .sheet-wrap { page: portrait; width: 210mm; height: 297mm; margin: 0; padding: 0; break-after: page; break-inside: avoid; overflow: hidden; }
@@ -321,6 +336,21 @@ tbody th { color: var(--accent-dark); }
   .cards-panel .section-heading { display: none; }
   .cards-output { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; grid-auto-rows: max-content; gap: 5mm; margin: 0; }
   .army-unit-card { align-self: start; height: fit-content; break-inside: avoid; border: .45mm solid #101419; box-shadow: none; }
+  .army-unit-card.wide-card {
+    grid-column: 1 / -1;
+    break-before: page;
+    page-break-before: always;
+  }
+  .army-unit-card.wide-card:first-child { break-before: auto; page-break-before: auto; }
+  .army-unit-card.scaled-card {
+    height: var(--print-card-height);
+    overflow: hidden;
+  }
+  .army-unit-card.scaled-card .card-scale-inner {
+    width: calc(100% / var(--print-card-scale));
+    transform: scale(var(--print-card-scale));
+    transform-origin: top left;
+  }
 }
 
 @page portrait { size: A4 portrait; margin: 0; }

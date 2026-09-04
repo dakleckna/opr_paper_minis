@@ -28,18 +28,26 @@
   // the local server and use a static, browser-only mode on github.io.
   const IS_GITHUB_PAGES = /(?:^|\.)github\.io$/i.test(window.location.hostname);
   const output = document.querySelector('#layout-output');
+  const initialDocumentTitle = document.title;
   const warnings = document.querySelector('#warnings');
   const folderInput = document.querySelector('#folder-input');
-  const folderButton = document.querySelector('#folder-button');
+  const jsonFileInput = document.querySelector('#json-file-input');
+  const uploadButton = document.querySelector('#upload-button');
+  const uploadMenu = document.querySelector('#upload-menu');
+  const uploadMenuWrap = document.querySelector('#upload-menu-wrap');
+  const uploadJsonButton = document.querySelector('#upload-json-button');
+  const uploadFolderButton = document.querySelector('#upload-folder-button');
   const aiJsonInput = document.querySelector('#ai-json-input');
   const aiButton = document.querySelector('#ai-button');
   const aiStatus = document.querySelector('#ai-status');
   const dropZone = document.querySelector('#drop-zone');
   const artworkAttribution = document.querySelector('#artwork-attribution');
   const printButton = document.querySelector('#print-button');
+  const cardsPrintButton = document.querySelector('#cards-print-button');
   const cardsButton = document.querySelector('#cards-button');
   const cardsPanel = document.querySelector('#cards-panel');
   const cardsOutput = document.querySelector('#cards-output');
+  const cardsSummary = document.querySelector('#cards-summary');
   const miniTemplate = document.querySelector('#mini-template');
   let objectUrls = [];
   let assetUrls = new Map();
@@ -48,6 +56,29 @@
   let loadedEntries = [];
   let loadedCards = [];
   let loadMessages = [];
+
+  function formatArmyPoints(army) {
+    const spent = Number(army?.listPoints);
+    const limit = Number(army?.list?.pointsLimit);
+    if (Number.isFinite(spent) && Number.isFinite(limit) && limit > 0) {
+      return `Verbrauchte Punkte: ${spent} / ${limit} pts`;
+    }
+    if (Number.isFinite(spent)) return `Verbrauchte Punkte: ${spent} pts`;
+    return 'Verbrauchte Punkte: nicht im ArmyForge-Export enthalten';
+  }
+
+  function updatePrintTitle(army) {
+    // Chrome/Edge use document.title as the default name in their
+    // "Save as PDF" dialog. Keep it to the faction/list name and remove
+    // characters that Windows cannot use in a filename.
+    const faction = String(army?.armyName || army?.armyFaction || army?.list?.name || '').trim();
+    const safeTitle = faction
+      .replace(/[<>:"/\\|?*]/g, '-')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 140);
+    document.title = safeTitle || initialDocumentTitle;
+  }
 
   function isImage(file) {
     return IMAGE_TYPES.has(file.type) || /\.(png|jpe?g|webp|svg)$/i.test(file.name);
@@ -921,6 +952,82 @@
     return spellCard;
   }
 
+  function fitLongCardsToA4() {
+    // Cards are normally printed in two columns. Measure in millimetres so
+    // the decision matches the @page cards dimensions, even when the cards
+    // panel is currently hidden on screen.
+    const cards = [...cardsOutput.querySelectorAll('.army-unit-card')];
+    if (!cards.length) return;
+
+    const probeMm = (widthMm, card) => {
+      const probe = card.cloneNode(true);
+      probe.classList.remove('wide-card', 'scaled-card');
+      probe.style.cssText = [
+        'position:absolute',
+        'left:-100000px',
+        'top:0',
+        `width:${widthMm}mm`,
+        'height:auto',
+        'min-height:0',
+        'max-height:none',
+        'overflow:visible',
+        'display:block',
+        'box-sizing:border-box',
+        'visibility:hidden',
+        'pointer-events:none',
+      ].join(';');
+      document.body.append(probe);
+      const height = Math.max(probe.scrollHeight, probe.getBoundingClientRect().height);
+      probe.remove();
+      return height;
+    };
+
+    const pageProbe = document.createElement('div');
+    pageProbe.style.cssText = 'position:absolute; left:-100000px; top:0; width:1mm; height:279mm; visibility:hidden; pointer-events:none;';
+    document.body.append(pageProbe);
+    const printablePageHeight = pageProbe.getBoundingClientRect().height;
+    pageProbe.remove();
+    if (!printablePageHeight) return;
+
+    // A4 portrait with the cards @page margins (8mm left/right) and the 5mm
+    // gap between columns: 94.5mm per column, 194mm across both columns.
+    const narrowWidth = 94.5;
+    const wideWidth = 194;
+    const ensureScaleInner = card => {
+      let inner = card.querySelector(':scope > .card-scale-inner');
+      if (inner) return inner;
+      inner = document.createElement('div');
+      inner.className = 'card-scale-inner';
+      while (card.firstChild) inner.append(card.firstChild);
+      card.append(inner);
+      return inner;
+    };
+
+    cards.forEach(card => {
+      const narrowHeight = probeMm(narrowWidth, card);
+      const wideHeight = probeMm(wideWidth, card);
+      const needsWide = narrowHeight > printablePageHeight - 2;
+      const naturalHeight = needsWide ? wideHeight : narrowHeight;
+      // Even a full-width card must remain on one A4 page. Scale only the
+      // contents and give the outer grid item the scaled flow height so the
+      // browser cannot paginate the card midway through its rules.
+      const printScale = needsWide
+        ? Math.min(1, (printablePageHeight - 2) / Math.max(1, naturalHeight))
+        : 1;
+      card.classList.toggle('wide-card', needsWide);
+      card.classList.toggle('scaled-card', printScale < .999);
+      card.dataset.printCardWidth = needsWide ? 'wide' : 'column';
+      if (printScale < .999) {
+        ensureScaleInner(card);
+        card.style.setProperty('--print-card-scale', String(printScale));
+        card.style.setProperty('--print-card-height', `${Math.max(1, naturalHeight * printScale)}px`);
+      } else {
+        card.style.removeProperty('--print-card-scale');
+        card.style.removeProperty('--print-card-height');
+      }
+    });
+  }
+
   function renderCards(cards, armyBook) {
     cardsOutput.replaceChildren();
     if (!cards.length) {
@@ -1003,6 +1110,9 @@
       cardsOutput.append(element);
       if (card.spells.length) cardsOutput.append(createSpellCard(card));
     });
+    fitLongCardsToA4();
+    // Let web fonts and the print stylesheet settle before measuring again.
+    requestAnimationFrame(fitLongCardsToA4);
   }
 
   function dimensions(entry) {
@@ -1212,6 +1322,8 @@
 
   function finishImport(army, records, armyBook, extraMessages = []) {
     const { entries, messages } = buildEntries(army, records, armyBook);
+    updatePrintTitle(army);
+    if (cardsSummary) cardsSummary.textContent = formatArmyPoints(army);
     loadedArmy = army;
     loadedArmyBook = armyBook;
     loadedEntries = entries;
@@ -1220,6 +1332,7 @@
     renderArtworkAttribution(records);
     renderCards(loadedCards, loadedArmyBook);
     cardsButton.disabled = !loadedCards.length;
+    if (cardsPrintButton) cardsPrintButton.disabled = !loadedCards.length;
     rebuildLayout();
   }
 
@@ -1365,6 +1478,33 @@
     }
   }
 
+  async function chooseJsonFile() {
+    // Use the File System Access picker where available. Unlike a generic
+    // multi-file input this selects exactly one JSON file and does not show a
+    // browser upload confirmation dialog.
+    if (typeof window.showOpenFilePicker !== 'function') {
+      jsonFileInput?.click();
+      return;
+    }
+    try {
+      const [fileHandle] = await window.showOpenFilePicker({
+        multiple: false,
+        types: [{ description: 'ArmyForge JSON', accept: { 'application/json': ['.json'] } }],
+        excludeAcceptAllOption: false,
+      });
+      if (fileHandle) handleFiles([await fileHandle.getFile()]);
+    } catch (error) {
+      if (error?.name === 'AbortError') return;
+      emitWarnings([`JSON-Datei konnte nicht gelesen werden: ${error?.message || 'unbekannter Fehler'}`]);
+    }
+  }
+
+  function setUploadMenuVisible(visible) {
+    if (!uploadMenu || !uploadButton) return;
+    uploadMenu.hidden = !visible;
+    uploadButton.setAttribute('aria-expanded', String(visible));
+  }
+
   function configureRuntimeMode() {
     if (!IS_GITHUB_PAGES) return;
     document.body.classList.add('github-pages');
@@ -1372,9 +1512,9 @@
     aiJsonInput?.remove();
     aiStatus?.remove();
     const title = dropZone?.querySelector('strong');
-    if (title) title.textContent = 'Ordner mit ArmyForge-JSON und Artworks auswählen';
+    if (title) title.textContent = 'ArmyForge-JSON oder Ordner hochladen';
     const description = dropZone?.querySelector(':scope > span');
-    if (description) description.textContent = 'GitHub Pages: Ordner-Import, Mini-Raster, Cards und PDF-Druck · KI nur lokal';
+    if (description) description.textContent = 'GitHub Pages: einzelne JSON-Datei oder kompletter Ordner · Mini-Raster, Cards und PDF-Druck · KI nur lokal';
   }
 
   configureRuntimeMode();
@@ -1382,7 +1522,28 @@
     handleFiles(event.target.files);
     event.target.value = '';
   });
-  folderButton?.addEventListener('click', chooseFolder);
+  jsonFileInput?.addEventListener('change', event => {
+    handleFiles(event.target.files);
+    event.target.value = '';
+  });
+  uploadButton?.addEventListener('click', event => {
+    event.stopPropagation();
+    setUploadMenuVisible(uploadMenu?.hidden !== false);
+  });
+  uploadJsonButton?.addEventListener('click', () => {
+    setUploadMenuVisible(false);
+    chooseJsonFile();
+  });
+  uploadFolderButton?.addEventListener('click', () => {
+    setUploadMenuVisible(false);
+    chooseFolder();
+  });
+  document.addEventListener('pointerdown', event => {
+    if (uploadMenuWrap && !uploadMenuWrap.contains(event.target)) setUploadMenuVisible(false);
+  });
+  document.addEventListener('keydown', event => {
+    if (event.key === 'Escape') setUploadMenuVisible(false);
+  });
   aiJsonInput?.addEventListener('change', event => {
     if (event.target.files?.length) loadJsonWithAi(event.target.files);
     event.target.value = '';
@@ -1400,15 +1561,22 @@
     if (event.target !== dropZone) return;
     if (event.key === 'Enter' || event.key === ' ') {
       event.preventDefault();
-      chooseFolder();
+      setUploadMenuVisible(true);
     }
   });
   cardsButton.addEventListener('click', () => {
     const nextVisible = cardsPanel.hidden;
     cardsPanel.hidden = !nextVisible;
     document.body.classList.toggle('cards-view', nextVisible);
+    if (cardsPrintButton) cardsPrintButton.hidden = !nextVisible;
     cardsButton.textContent = nextVisible ? 'Zurück zu den Minis' : 'Cards anzeigen';
     if (nextVisible) cardsPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
   });
   printButton.addEventListener('click', () => window.print());
+  cardsPrintButton?.addEventListener('click', () => {
+    if (!loadedCards.length || cardsPanel.hidden) return;
+    document.body.classList.add('print-cards-only');
+    window.print();
+  });
+  window.addEventListener('afterprint', () => document.body.classList.remove('print-cards-only'));
 })();

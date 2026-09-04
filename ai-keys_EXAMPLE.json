@@ -10,14 +10,19 @@
       "type": "huggingface",
       "enabled": true,
       "apiToken": "token here",
-      "model": "black-forest-labs/FLUX.1-schnell"
+      "model": "black-forest-labs/FLUX.1-schnell",
+      "inferenceProvider": "fal-ai",
+      "width": 768,
+      "height": 1152,
+      "steps": 4
     },
     {
       "type": "cloudflare",
       "enabled": true,
       "apiToken": "token here",
       "accountId": "id here",
-      "model": "@cf/black-forest-labs/flux-1-schnell"
+      "model": "@cf/black-forest-labs/flux-1-schnell",
+      "steps": 8
     }
   ]
 }
