@@ -199,6 +199,7 @@ body.cards-view .cards-panel { grid-column: 1; }
   transition: border-color .15s ease, background .15s ease;
 }
 .drop-zone.is-dragging, .drop-zone:focus { border-color: var(--teal); background: #eaf4f0; }
+body.github-pages #drop-zone > strong, body.github-pages #drop-zone > span { display: none; }
 .drop-zone strong { font-size: .96rem; }
 .drop-zone > span { color: var(--muted); font-size: .84rem; }
 .file-actions { margin-top: 5px; display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
