@@ -37,6 +37,9 @@
   const uploadMenuWrap = document.querySelector('#upload-menu-wrap');
   const uploadJsonButton = document.querySelector('#upload-json-button');
   const uploadFolderButton = document.querySelector('#upload-folder-button');
+  const pagesUploadActions = document.querySelector('#pages-upload-actions');
+  const pagesJsonButton = document.querySelector('#pages-json-button');
+  const pagesFolderButton = document.querySelector('#pages-folder-button');
   const aiJsonInput = document.querySelector('#ai-json-input');
   const aiButton = document.querySelector('#ai-button');
   const aiStatus = document.querySelector('#ai-status');
@@ -1511,10 +1514,12 @@
     aiButton?.remove();
     aiJsonInput?.remove();
     aiStatus?.remove();
+    uploadMenuWrap?.remove();
+    if (pagesUploadActions) pagesUploadActions.hidden = false;
     const title = dropZone?.querySelector('strong');
-    if (title) title.textContent = 'ArmyForge-JSON oder Ordner hochladen';
+    if (title) title.textContent = 'ArmyForge-JSON oder JSON mit Artwork hochladen';
     const description = dropZone?.querySelector(':scope > span');
-    if (description) description.textContent = 'JSON hochladen für Cards, Ordner mit zusätzlichen Artworks';
+    description?.remove();
   }
 
   configureRuntimeMode();
@@ -1538,6 +1543,8 @@
     setUploadMenuVisible(false);
     chooseFolder();
   });
+  pagesJsonButton?.addEventListener('click', chooseJsonFile);
+  pagesFolderButton?.addEventListener('click', chooseFolder);
   document.addEventListener('pointerdown', event => {
     if (uploadMenuWrap && !uploadMenuWrap.contains(event.target)) setUploadMenuVisible(false);
   });
