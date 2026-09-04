@@ -1514,7 +1514,7 @@
     const title = dropZone?.querySelector('strong');
     if (title) title.textContent = 'ArmyForge-JSON oder Ordner hochladen';
     const description = dropZone?.querySelector(':scope > span');
-    if (description) description.textContent = 'GitHub Pages: einzelne JSON-Datei oder kompletter Ordner · Mini-Raster, Cards und PDF-Druck · KI nur lokal';
+    if (description) description.textContent = 'JSON hochladen für Cards, Ordner mit zusätzlichen Artworks';
   }
 
   configureRuntimeMode();
