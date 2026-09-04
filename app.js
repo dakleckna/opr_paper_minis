@@ -1343,7 +1343,11 @@
     const params = new URLSearchParams({ armyId: army.armyId, gameSystem: army.gameSystem });
     const localProxy = `/api/army-book?${params.toString()}`;
     const directArmyForge = `https://army-forge.onepagerules.com/api/army-books/${encodeURIComponent(army.armyId)}?gameSystem=${encodeURIComponent(army.gameSystem)}`;
-    const candidates = IS_GITHUB_PAGES ? [directArmyForge] : [localProxy];
+    // ArmyForge does not currently expose ACAO headers on its API. GitHub
+    // Pages therefore tries the direct endpoint first and then the read-only
+    // Jina proxy, which returns the same JSON in a Markdown wrapper.
+    const jinaProxy = `https://r.jina.ai/http://${directArmyForge.slice('https://'.length)}`;
+    const candidates = IS_GITHUB_PAGES ? [directArmyForge, jinaProxy] : [localProxy];
     let lastError = null;
     for (const url of candidates) {
       try {
@@ -1352,7 +1356,11 @@
           lastError = new Error(`HTTP ${response.status}`);
           continue;
         }
-        return response.json();
+        if (url !== jinaProxy) return response.json();
+        const wrapped = await response.text();
+        const marker = /(?:^|\n)Markdown Content:\s*\n/i.exec(wrapped);
+        const json = marker ? wrapped.slice(marker.index + marker[0].length).trim() : wrapped.trim();
+        return JSON.parse(json);
       } catch (error) {
         lastError = error;
       }
